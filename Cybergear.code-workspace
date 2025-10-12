@@ -1,0 +1,28 @@
+{
+	"folders": [
+		{
+			"path": "../../Cybergear"
+		},
+		{
+			"name": "record-player",
+			"path": "."
+		},
+		{
+			"name": "serial://dev/tty.SLAB_USBtoUART",
+			"uri": "serial://%2fdev%2ftty.slab_usbtouart/"
+		}
+	],
+	"settings": {
+		"python.languageServer": "Pylance",
+		"python.analysis.diagnosticSeverityOverrides": {
+			"reportMissingModuleSource": "none",
+			"reportShadowedImports": "none"
+		},
+		"circuitpython.board.version": null,
+		"python.analysis.extraPaths": [
+			"",
+			"/Users/ivanstudio/.vscode/extensions/joedevivo.vscode-circuitpython-0.2.0-darwin-arm64/stubs",
+			"/Users/ivanstudio/Library/Application Support/Code/User/globalStorage/joedevivo.vscode-circuitpython/bundle/20251010/adafruit-circuitpython-bundle-py-20251010/lib"
+		]
+	}
+}
