@@ -2,9 +2,10 @@
 from tools import CANMotorController
 from esp32 import CAN
 import time
+import math
 # TX,GPIO15,PIN 21
 # RX,GPIO13,PIN 20
-bus = CAN(0, tx=18, rx=19, baudrate=1000000, mode=CAN.NORMAL) #tx=15, rx=13
+bus = CAN(0, tx=18, rx=19, baudrate=1000000, mode=CAN.NORMAL)  # tx=15, rx=13
 print(bus)
 motor = CANMotorController(bus, motor_id=127, main_can_id=254)
 
@@ -73,6 +74,241 @@ class JogController:
             # 等待下一步（控制平滑度）
             time.sleep(self.accel_interval)
 
+    def ramp_to_target_soft(
+        self,
+        duration=2.0,
+        sample_interval=0.03,
+        max_step=0.08,
+    ):
+        """
+        使用 raised-cosine（半周期余弦）曲线配合自适应步长限制，进一步抑制中后段的噪音与振动。
+        duration: 目标速度的总过渡时间（秒）
+        sample_interval: 发送命令的时间间隔（秒）
+        max_step: 单次速度变化的上限（rad/s），避免后段突跳
+        """
+        if duration <= 0 or sample_interval <= 0:
+            self.ramp_to_target()
+            return
+
+        self._set_limit_current(27)
+
+        start_vel = self.current_vel
+        target_vel = self.target_vel
+        delta = target_vel - start_vel
+
+        if abs(delta) < 1e-6:
+            return
+
+        steps = max(1, int(duration / sample_interval))
+        last_sent = start_vel
+
+        for step in range(1, steps + 1):
+            progress = step / steps
+            # Raised cosine (Hann) 曲线：0.5 - 0.5*cos(pi*t)，首尾一阶/二阶导数均为0
+            ease = 0.5 - 0.5 * math.cos(math.pi * progress)
+            desired = start_vel + delta * ease
+
+            # 自适应步长限制 —— 越接近目标，允许的变化越小，从而抑制中后段噪音
+            taper = max(0.2, min(progress, 1 - progress) * 2)
+            allowed_step = max_step * taper
+            delta_cmd = desired - last_sent
+            if abs(delta_cmd) > allowed_step:
+                desired = last_sent + allowed_step * (1 if delta_cmd > 0 else -1)
+
+            self.current_vel = desired
+            self._send_velocity(desired)
+            last_sent = desired
+            time.sleep(sample_interval)
+
+        self.current_vel = target_vel
+        self._send_velocity(target_vel)
+
+    def ramp_to_target_jerk(
+        self,
+        duration=2.0,
+        sample_interval=0.02,
+    ):
+        """
+        七阶（jerk-limited）S 曲线，确保速度/加速度/加加速度在首尾都为 0。
+        duration: 过渡总时间（秒）
+        sample_interval: 指令间隔（秒）
+        """
+        if duration <= 0 or sample_interval <= 0:
+            self.ramp_to_target()
+            return
+
+        self._set_limit_current(27)
+        start_vel = self.current_vel
+        target_vel = self.target_vel
+        delta = target_vel - start_vel
+        if abs(delta) < 1e-6:
+            return
+
+        steps = max(1, int(duration / sample_interval))
+
+        for step in range(1, steps + 1):
+            t = step / steps
+            # jerk-limited polynomial: 35t^4 - 84t^5 + 70t^6 - 20t^7
+            ease = t ** 4 * (35 - 84 * t + 70 * t ** 2 - 20 * t ** 3)
+            desired = start_vel + delta * ease
+            self.current_vel = desired
+            self._send_velocity(desired)
+            time.sleep(sample_interval)
+
+        self.current_vel = target_vel
+        self._send_velocity(target_vel)
+
+    def ramp_to_target_exp(
+        self,
+        duration=2.0,
+        accel_portion=0.25,
+        sample_interval=0.03,
+        k=3.5,
+    ):
+        """
+        分段梯形速度曲线，首尾用指数尾巴过渡，降低起停噪音。
+        accel_portion: 起步/收尾所占总时间的比例（0.05~0.45）
+        k: 指数尾巴陡峭程度，越大越陡
+        """
+        if duration <= 0 or sample_interval <= 0:
+            self.ramp_to_target()
+            return
+
+        accel_portion = min(max(accel_portion, 0.05), 0.45)
+        decel_portion = accel_portion
+        mid_portion = max(0.05, 1 - accel_portion - decel_portion)
+
+        self._set_limit_current(27)
+        start_vel = self.current_vel
+        target_vel = self.target_vel
+        delta = target_vel - start_vel
+        if abs(delta) < 1e-6:
+            return
+
+        steps = max(1, int(duration / sample_interval))
+
+        def exp_tail(u):
+            if u <= 0:
+                return 0.0
+            if u >= 1:
+                return 1.0
+            denom = 1 - math.exp(-k)
+            return (1 - math.exp(-k * u)) / denom
+
+        for step in range(1, steps + 1):
+            progress = step / steps
+            if progress < accel_portion:
+                local = progress / accel_portion
+                ease = accel_portion * exp_tail(local)
+            elif progress > 1 - decel_portion:
+                local = (progress - (1 - decel_portion)) / decel_portion
+                ease = 1 - decel_portion * (1 - exp_tail(local))
+            else:
+                if mid_portion <= 0:
+                    ease = progress
+                else:
+                    linear = (progress - accel_portion) / mid_portion
+                    ease = accel_portion + linear * mid_portion
+
+            desired = start_vel + delta * ease
+            self.current_vel = desired
+            self._send_velocity(desired)
+            time.sleep(sample_interval)
+
+        self.current_vel = target_vel
+        self._send_velocity(target_vel)
+
+    def ramp_to_target_pid(
+        self,
+        run_time=3.0,
+        sample_interval=0.02,
+        kp=0.9,
+        ki=0.15,
+        kd=0.0,
+        feedforward=0.7,
+        clamp_step=0.1,
+    ):
+        """
+        基于离散 PI(D) 回路 + 前馈的速度追踪方式，对非理想负载更友好。
+        clamp_step: 每次允许的最大速度改变量（rad/s）
+        """
+        if run_time <= 0 or sample_interval <= 0:
+            self.ramp_to_target()
+            return
+
+        self._set_limit_current(27)
+        steps = max(1, int(run_time / sample_interval))
+        integral = 0.0
+        prev_error = self.target_vel - self.current_vel
+
+        for _ in range(steps):
+            error = self.target_vel - self.current_vel
+            integral += error * sample_interval
+            derivative = (error - prev_error) / sample_interval
+            command = (
+                feedforward * self.target_vel
+                + kp * error
+                + ki * integral
+                + kd * derivative
+            )
+
+            delta_cmd = command - self.current_vel
+            if delta_cmd > clamp_step:
+                delta_cmd = clamp_step
+            elif delta_cmd < -clamp_step:
+                delta_cmd = -clamp_step
+
+            desired = self.current_vel + delta_cmd
+            self.current_vel = desired
+            self._send_velocity(desired)
+            prev_error = error
+            time.sleep(sample_interval)
+
+            if abs(error) < 5e-3 and abs(delta_cmd) < 1e-3:
+                break
+
+        self.current_vel = self.target_vel
+        self._send_velocity(self.target_vel)
+
+    def ramp_to_target_filtered(
+        self,
+        duration=1.8,
+        sample_interval=0.02,
+        window=5,
+    ):
+        """
+        先按线性 ramp 生成指令，再用滑动平均滤波抑制高频抖动。
+        window: 滤波窗口长度
+        """
+        if duration <= 0 or sample_interval <= 0:
+            self.ramp_to_target()
+            return
+
+        window = max(2, int(window))
+        self._set_limit_current(27)
+        start_vel = self.current_vel
+        target_vel = self.target_vel
+        delta = target_vel - start_vel
+        if abs(delta) < 1e-6:
+            return
+
+        steps = max(1, int(duration / sample_interval))
+        history = []
+
+        for step in range(1, steps + 1):
+            progress = step / steps
+            base = start_vel + delta * progress
+            history.append(base)
+            if len(history) > window:
+                history.pop(0)
+            desired = sum(history) / len(history)
+            self.current_vel = desired
+            self._send_velocity(desired)
+            time.sleep(sample_interval)
+
+        self.current_vel = target_vel
+        self._send_velocity(target_vel)
+
     def stop(self):
         """立即停止（设 0）"""
         self.current_vel = 0
@@ -98,26 +334,34 @@ class JogController:
         self.current_vel = 0
         self._send_velocity(0)
 
-controller = JogController(motor, accel_step=0.1, accel_interval=0.1)
-controller.set_target(3.49)     # 设置目标速度
-controller.ramp_to_target()     # 平滑加速到 3.49 rad/s
+def create_controller(accel_step=0.1, accel_interval=0.1):
+    """Return a JogController bound to the shared motor instance."""
+    return JogController(motor, accel_step=accel_step, accel_interval=accel_interval)
 
-try:
-    while True:
-        """ # 获取当前速度（rad/s）
-        vel = controller.current_vel()  # 或者 controller.current_vel
 
-        # 打印
-        print("当前速度: {:.3f} rad/s".format(vel))
+def run_demo():
+    """Replicate the original jogging demo for quick manual tests."""
+    controller = create_controller()
+    controller.set_target(3.49)     # 设置目标速度
+    controller.ramp_to_target()     # 平滑加速到 3.49 rad/s
 
-        # 等待 0.1 秒 """
-        time.sleep(0.1)
+    try:
+        while True:
+            """ # 获取当前速度（rad/s）
+            vel = controller.current_vel()  # 或者 controller.current_vel
 
-except KeyboardInterrupt:
-    print("主循环停止")
-    controller.soft_stop()          # 停止
-    motor.disable()  
+            # 打印
+            print("当前速度: {:.3f} rad/s".format(vel))
 
-#time.sleep(15)                # 维持 5 秒
-motor.disable()          # 关闭电机
-#exec(open('classtest.py').read())
+            # 等待 0.1 秒 """
+            time.sleep(0.1)
+
+    except KeyboardInterrupt:
+        print("主循环停止")
+        controller.soft_stop()          # 停止
+    finally:
+        motor.disable()          # 关闭电机
+
+
+if __name__ == "__main__":
+    run_demo()
