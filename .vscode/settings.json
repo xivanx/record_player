@@ -6,8 +6,10 @@
     },
     "circuitpython.board.version": null,
     "python.analysis.extraPaths": [
-        "",
+        "/Users/ivanstudio/.vscode/extensions/joedevivo.vscode-circuitpython-0.2.0-darwin-arm64/boards/0x10C4/0xEA60",
         "/Users/ivanstudio/.vscode/extensions/joedevivo.vscode-circuitpython-0.2.0-darwin-arm64/stubs",
-        "/Users/ivanstudio/Library/Application Support/Code/User/globalStorage/joedevivo.vscode-circuitpython/bundle/20251010/adafruit-circuitpython-bundle-py-20251010/lib"
-    ]
+        "/Users/ivanstudio/Library/Application Support/Code/User/globalStorage/joedevivo.vscode-circuitpython/bundle/20251105/adafruit-circuitpython-bundle-py-20251105/lib"
+    ],
+    "circuitpython.board.vid": "0x10C4",
+    "circuitpython.board.pid": "0xEA60"
 }
