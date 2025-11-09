@@ -12,7 +12,6 @@ Run with: mpremote connect [port] run switch.py
 
 from machine import Pin
 import time
-import math
 
 import classtest
 
@@ -36,53 +35,6 @@ PIN_MAP = {
 TARGET_LOW_23 = 3.49          # rad/s when GPIO23 is pulled low
 TARGET_LOW_22 = 4.7123889     # rad/s when GPIO22 is pulled low
 POLL_INTERVAL_MS = 50
-SOFT_RAMP_DURATION = 5.5
-SOFT_SAMPLE_INTERVAL = 0.01
-SOFT_MAX_STEP = 0.08
-
-
-def ensure_soft_method():
-    """Attach ramp_to_target_soft to JogController if the firmware lacks it."""
-    if hasattr(controller, "ramp_to_target_soft"):
-        return
-
-    def ramp_to_target_soft(self, duration=2.0, sample_interval=0.03, max_step=0.08):
-        if duration <= 0 or sample_interval <= 0:
-            return self.ramp_to_target()
-
-        self._set_limit_current(27)
-        start_vel = self.current_vel
-        target_vel = self.target_vel
-        delta = target_vel - start_vel
-        if abs(delta) < 1e-6:
-            return
-
-        steps = max(1, int(duration / sample_interval))
-        last_sent = start_vel
-
-        for step in range(1, steps + 1):
-            progress = step / steps
-            ease = 0.5 - 0.5 * math.cos(math.pi * progress)
-            desired = start_vel + delta * ease
-
-            taper = max(0.2, min(progress, 1 - progress) * 2)
-            allowed_step = max_step * taper
-            delta_cmd = desired - last_sent
-            if abs(delta_cmd) > allowed_step:
-                desired = last_sent + allowed_step * (1 if delta_cmd > 0 else -1)
-
-            self.current_vel = desired
-            self._send_velocity(desired)
-            last_sent = desired
-            time.sleep(sample_interval)
-
-        self.current_vel = target_vel
-        self._send_velocity(target_vel)
-
-    controller.__class__.ramp_to_target_soft = ramp_to_target_soft
-    print("WARN: 已自动注入 ramp_to_target_soft(), 请尽快同步最新 classtest.py。")
-
-
 def read_switch():
     """Return the active command based on the current pin levels."""
     levels = {name: pin.value() for name, pin in PIN_MAP.items()}
@@ -95,30 +47,25 @@ def read_switch():
     return "IDLE"
 
 
-def ramp_soft():
-    """Always use ramp_to_target_soft, injecting the method if necessary."""
-    ensure_soft_method()
-    controller.ramp_to_target_soft(
-        duration=SOFT_RAMP_DURATION,
-        sample_interval=SOFT_SAMPLE_INTERVAL,
-        max_step=SOFT_MAX_STEP,
-    )
+def send_velocity_immediate(target):
+    """Set the target velocity and transmit it without ramping."""
+    controller._set_limit_current(27)
+    controller.set_target(target)
+    controller.current_vel = controller.target_vel
+    controller._send_velocity(controller.current_vel)
 
 
 def apply_command(command):
     """Dispatch the requested command to the jog controller."""
     if command == "STOP":
-        print("Switch -> STOP: easing velocity to 0 rad/s")
-        controller.set_target(0.0)
-        ramp_soft()
+        print("Switch -> STOP: set velocity 0 rad/s")
+        send_velocity_immediate(0.0)
     elif command == "RUN_3_49":
-        print("Switch -> SPEED 3.49 rad/s (soft ramp)")
-        controller.set_target(TARGET_LOW_23)
-        ramp_soft()
+        print("Switch -> SPEED 3.49 rad/s (instant)")
+        send_velocity_immediate(TARGET_LOW_23)
     elif command == "RUN_4_71":
-        print("Switch -> SPEED 4.7123889 rad/s (soft ramp)")
-        controller.set_target(TARGET_LOW_22)
-        ramp_soft()
+        print("Switch -> SPEED 4.7123889 rad/s (instant)")
+        send_velocity_immediate(TARGET_LOW_22)
     else:
         # Nothing to do for IDLE; leave controller at its last state.
         pass
