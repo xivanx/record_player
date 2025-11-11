@@ -10,7 +10,7 @@ print(bus)
 motor = CANMotorController(bus, motor_id=127, main_can_id=254)
 
 class JogController:
-    def __init__(self, motor, accel_step=0.1, accel_interval=0.05):
+    def __init__(self, motor, accel_step=0.5, accel_interval=0.25):
         """
         motor: 你的 motor 实例
         accel_step: 每次增加的 rad/s
@@ -41,7 +41,7 @@ class JogController:
         )
         self.motor.parse_received_msg(recv_data, recv_id)
 
-    def _set_limit_current(self, value=27):
+    def _set_limit_current(self, value=45):
         """设置限流参数"""
         self.motor.write_single_param(param_name="limit_cur", value=value)
 
@@ -54,7 +54,7 @@ class JogController:
         import time
 
         # 确保已设定限流等参数
-        self._set_limit_current(27)
+        self._set_limit_current(45)
 
         # 加速或减速过程（这里写加速为主）
         while abs(self.target_vel - self.current_vel) > 1e-3:
@@ -74,11 +74,44 @@ class JogController:
             # 等待下一步（控制平滑度）
             time.sleep(self.accel_interval)
 
+    def ramp_to_target_one_sec(self, duration=1.0, sample_interval=0.02):
+        """
+        在指定持续时间（默认 1 秒）内线性过渡到目标速度。
+        duration: 总过渡时间（秒）
+        sample_interval: 更新间隔（秒）
+        """
+        import time
+
+        if duration <= 0 or sample_interval <= 0:
+            self.current_vel = self.target_vel
+            self._send_velocity(self.current_vel)
+            return
+
+        self._set_limit_current(27)
+
+        start_vel = self.current_vel
+        target_vel = self.target_vel
+        delta = target_vel - start_vel
+
+        if abs(delta) < 1e-6:
+            return
+
+        steps = max(1, int(duration / sample_interval))
+        vel_step = delta / steps
+
+        for _ in range(steps):
+            self.current_vel += vel_step
+            self._send_velocity(self.current_vel)
+            time.sleep(sample_interval)
+
+        self.current_vel = target_vel
+        self._send_velocity(target_vel)
+
     def ramp_to_target_soft(
         self,
-        duration=2.0,
-        sample_interval=0.03,
-        max_step=0.08,
+        duration=2.5,
+        sample_interval=0.02,
+        max_step=0.03,
     ):
         """
         使用 raised-cosine（半周期余弦）曲线配合自适应步长限制，进一步抑制中后段的噪音与振动。
@@ -122,6 +155,33 @@ class JogController:
 
         self.current_vel = target_vel
         self._send_velocity(target_vel)
+
+    def ramp_to_target_simple(self, interval=0.1, scale=1.05):
+        """
+        每隔 interval 秒把当前速度提高 scale 倍，直到达到目标速度（简单测试用）。
+        """
+        import time
+
+        if interval <= 0 or scale <= 1.0:
+            self.current_vel = self.target_vel
+            self._send_velocity(self.current_vel)
+            return
+
+        self._set_limit_current(27)
+
+        if self.current_vel <= 0:
+            self.current_vel = min(self.accel_step, self.target_vel)
+            self._send_velocity(self.current_vel)
+            time.sleep(interval)
+
+        while self.current_vel < self.target_vel:
+            self.current_vel *= scale
+            if self.current_vel > self.target_vel:
+                self.current_vel = self.target_vel
+            self._send_velocity(self.current_vel)
+            time.sleep(interval)
+
+        self._send_velocity(self.target_vel)
 
     def ramp_to_target_jerk(
         self,

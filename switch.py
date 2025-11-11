@@ -47,9 +47,9 @@ def read_switch():
     return "IDLE"
 
 
-def send_velocity_immediate(target):
-    """Set the target velocity and transmit it without ramping."""
-    controller._set_limit_current(27)
+def send_velocity(target):
+    """Send the requested velocity immediately."""
+    controller._set_limit_current(45)
     controller.set_target(target)
     controller.current_vel = controller.target_vel
     controller._send_velocity(controller.current_vel)
@@ -59,13 +59,13 @@ def apply_command(command):
     """Dispatch the requested command to the jog controller."""
     if command == "STOP":
         print("Switch -> STOP: set velocity 0 rad/s")
-        send_velocity_immediate(0.0)
+        send_velocity(0.0)
     elif command == "RUN_3_49":
         print("Switch -> SPEED 3.49 rad/s (instant)")
-        send_velocity_immediate(TARGET_LOW_23)
+        send_velocity(TARGET_LOW_23)
     elif command == "RUN_4_71":
         print("Switch -> SPEED 4.7123889 rad/s (instant)")
-        send_velocity_immediate(TARGET_LOW_22)
+        send_velocity(TARGET_LOW_22)
     else:
         # Nothing to do for IDLE; leave controller at its last state.
         pass
