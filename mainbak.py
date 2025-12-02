@@ -16,3 +16,4 @@ received_msg_data, received_msg_arbitration_id = motor.send_receive_can_message(
 )
 motor.parse_received_msg(received_msg_data, received_msg_arbitration_id)
 motor.write_single_param(param_name="limit_cur", value=27)
+motor.disable()

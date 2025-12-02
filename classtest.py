@@ -425,4 +425,4 @@ def run_demo():
 
 if __name__ == "__main__":
     run_demo()
-#exec(open('pintest.py').read())
+#exec(open('switch.py').read())
